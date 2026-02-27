@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "IndexMap",
+  "type": "object",
+  "required": ["company_name", "fiscal_year_label", "sections", "statements", "notes", "priority_locations"],
+  "properties": {
+    "company_name": {"type": "string"},
+    "fiscal_year_label": {"type": "string"},
+    "units_default": {"type": "string"},
+    "sections": {"type": "array", "items": {"type": "object"}},
+    "statements": {"type": "array", "items": {"type": "object"}},
+    "notes": {"type": "array", "items": {"type": "object"}},
+    "priority_locations": {"type": "object"}
+  }
+}

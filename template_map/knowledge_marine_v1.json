@@ -1,0 +1,159 @@
+{
+  "workbook_name": "databook_template.xlsx",
+  "sheets": {
+    "Sheet": {
+      "type": "note_rollup",
+      "header_row": null,
+      "line_item_column": "A",
+      "year_columns": [],
+      "evidence_cols": [
+        "Source",
+        "Evidence",
+        "Confidence"
+      ]
+    },
+    "CF BS": {
+      "type": "financial_statement",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "statement": "balance_sheet"
+    },
+    "CF IS": {
+      "type": "financial_statement",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "statement": "income_statement"
+    },
+    "CF CFS": {
+      "type": "financial_statement",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "statement": "cash_flow"
+    },
+    "Borrowings": {
+      "type": "note_rollup",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "topic": "borrowings"
+    },
+    "PPE": {
+      "type": "note_rollup",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "topic": "ppe"
+    },
+    "Revenue & OI": {
+      "type": "note_rollup",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "topic": "revenue"
+    },
+    "Expenses": {
+      "type": "note_rollup",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "topic": "expenses"
+    },
+    "Working capital": {
+      "type": "note_rollup",
+      "header_row": 1,
+      "line_item_column": "A",
+      "year_columns": [
+        "B",
+        "C"
+      ],
+      "evidence_cols": [
+        "G",
+        "H",
+        "I"
+      ],
+      "topic": "working_capital"
+    }
+  },
+  "write_rules": {
+    "skip_formula_cells": true,
+    "skip_non_empty_cells": false
+  },
+  "sheet_detection_rules": {
+    "year_header_patterns": [
+      "FY",
+      "F.Y",
+      "20",
+      "202"
+    ],
+    "line_item_column_candidates": [
+      "A",
+      "B"
+    ],
+    "evidence_column_names": [
+      "reference",
+      "confidence",
+      "source",
+      "page",
+      "evidence"
+    ]
+  }
+}

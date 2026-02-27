@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Extraction",
+  "type": "object",
+  "required": ["module", "version", "rows", "missing", "qa"],
+  "properties": {
+    "module": {"type": "string"},
+    "version": {"type": "string"},
+    "rows": {"type": "array", "items": {"type": "object"}},
+    "missing": {"type": "array", "items": {"type": "object"}},
+    "notes": {"type": "string"},
+    "qa": {"type": "object"}
+  }
+}

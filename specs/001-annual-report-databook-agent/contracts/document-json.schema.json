@@ -1,0 +1,34 @@
+// specs/001-annual-report-databook-agent/contracts/document-json.schema.json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Document",
+  "type": "object",
+  "required": ["meta", "pages"],
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["file_name", "sha256", "pages", "pdf_type", "created_at"],
+      "properties": { 
+        "file_name": {"type": "string"},
+        "sha256": {"type": "string"},
+        "pages": {"type": "integer", "minimum": 1},
+        "pdf_type": {"type": "string", "enum": ["text", "scanned", "mixed"]},
+        "created_at": {"type": "string"}
+      }
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["page", "type", "text_blocks", "tables", "images"],
+        "properties": {
+          "page": {"type": "integer", "minimum": 1},
+          "type": {"type": "string", "enum": ["text", "image"]},
+          "text_blocks": {"type": "array", "items": {"type": "object"}},
+          "tables": {"type": "array", "items": {"type": "object"}},
+          "images": {"type": "array", "items": {"type": "object"}}
+        }
+      }
+    }
+  }
+}

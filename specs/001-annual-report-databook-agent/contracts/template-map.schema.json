@@ -1,0 +1,11 @@
+// specs/001-annual-report-databook-agent/contracts/template-map.schema.json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TemplateMap",
+  "type": "object",
+  "required": ["workbook_name", "sheets"],
+  "properties": {
+    "workbook_name": {"type": "string"},
+    "sheets": {"type": "object"}
+  }
+}

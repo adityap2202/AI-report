@@ -1,0 +1,2 @@
+[console_scripts]
+databook-run = src.main:app
