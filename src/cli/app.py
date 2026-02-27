@@ -77,6 +77,11 @@ def run(
     debug: bool = typer.Option(False, "--debug"),
     template_map: Path | None = typer.Option(None, "--template-map", help="Pre-built template map JSON; else auto-analyze workbook"),
     locator_strategy: str = typer.Option("llm", "--locator-strategy", help="llm (default) | deterministic"),
+    statement_detection: str = typer.Option(
+        "llm",
+        "--statement-detection",
+        help="How to find BS/IS/CF pages: llm (one-shot digest) | grep-agent (LLM agent with search tool)",
+    ),
     phase: int = typer.Option(3, "--phase", help="2 = statements only; 3 = full databook (notes, gov, MD&A)"),
     llm_mode: str = typer.Option("full", "--llm-mode", help="off | planner_only | full"),
     max_target_attempts: int = typer.Option(6, "--max-target-attempts", help="Max attempts per Phase 3 target"),
@@ -96,6 +101,7 @@ def run(
         debug=debug,
         template_map=template_map,
         locator_strategy=locator_strategy,
+        statement_detection=statement_detection,
         phase=phase,
         llm_mode=llm_mode,
         max_target_attempts=max_target_attempts,
@@ -116,6 +122,7 @@ def _run_impl(
     debug: bool = False,
     template_map: Path | None = None,
     locator_strategy: str = "llm",
+    statement_detection: str = "llm",
     phase: int = 3,
     llm_mode: str = "full",
     max_target_attempts: int = 6,
@@ -183,11 +190,27 @@ def _run_impl(
         doc_path.write_text(document.model_dump_json(indent=2), encoding="utf-8")
         logger.info("Wrote %s", doc_path)
 
-        # 3) Index map
+        # 3) Index map (statement pages from LLM or grep-agent when using llm strategy)
+        statement_pages_from_llm: dict | None = None
+        if locator_strategy == "llm":
+            try:
+                if statement_detection == "grep-agent":
+                    from src.pipeline.locate.statement_finder_agent import detect_statement_pages_grep_agent
+                    statement_pages_from_llm = detect_statement_pages_grep_agent(document)
+                    if statement_pages_from_llm:
+                        logger.info("Grep-agent index: BS=%s IS=%s CF=%s", *[statement_pages_from_llm.get(k) for k in ("BS", "IS", "CF")])
+                else:
+                    from src.pipeline.locate.llm_planner import detect_statement_pages
+                    statement_pages_from_llm = detect_statement_pages(document)
+                    if statement_pages_from_llm:
+                        logger.info("LLM index: BS=%s IS=%s CF=%s", *[statement_pages_from_llm.get(k) for k in ("BS", "IS", "CF")])
+            except Exception as e:
+                logger.warning("Statement detection failed, using regex index: %s", e)
         index = build_index_map(
             document,
             company_name_override=company_name or None,
             fiscal_year_override=fy or None,
+            statement_pages_from_llm=statement_pages_from_llm,
         )
         index_path = ctx.evidence_pack_dir / "index_map.json"
         index_path.write_text(index.model_dump_json(indent=2), encoding="utf-8")

@@ -1,5 +1,5 @@
 """
-Optional LLM planner: ranks candidate pages only. Does not extract numbers or validate.
+Optional LLM planner: (1) detect statement pages for index_map; (2) rank candidate pages for locator.
 Invalid response -> fallback deterministic; validators are final authority.
 """
 from __future__ import annotations
@@ -12,6 +12,109 @@ from typing import Any, Callable
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def detect_statement_pages(
+    document: Any,
+    *,
+    max_digest_pages: int = 60,
+    timeout: int = 60,
+    _invoke_llm: Callable[[str, str], str] | None = None,
+) -> dict[str, int]:
+    """
+    One LLM call: given a document digest (page, snippet, table header row), return
+    the single page number for each of BS, IS, CF. Used to build index_map from LLM instead of regex.
+    Returns e.g. {"BS": 70, "IS": 71, "CF": 72}. Missing or invalid keys -> {}.
+    """
+    from src.models.document import Document
+
+    doc = document if isinstance(document, Document) else document
+    page_by_num = {p.page: p for p in doc.pages}
+
+    def _page_text(pg: Any) -> str:
+        parts = [b.text for b in getattr(pg, "text_blocks", [])]
+        for t in getattr(pg, "tables", []):
+            grid = getattr(t, "grid", None) or []
+            for row in grid:
+                for cell in row:
+                    if isinstance(cell, str) and cell.strip():
+                        parts.append(cell.strip())
+        return " ".join(parts)
+
+    digest_entries = []
+    for pg in doc.pages:
+        tables = getattr(pg, "tables", []) or []
+        if not tables:
+            continue
+        best_size = 0
+        header_row: list[str] = []
+        for t in tables:
+            grid = getattr(t, "grid", None) or []
+            if not grid:
+                continue
+            r, c = len(grid), len(grid[0]) if grid[0] else 0
+            if c < 2:
+                continue
+            size = r * c
+            if size > best_size:
+                best_size = size
+                header_row = [str(cell) for cell in grid[0]]
+        if best_size == 0:
+            continue
+        text = _page_text(pg)[:350]
+        digest_entries.append({
+            "page": pg.page,
+            "snippet": text,
+            "table_cells": best_size,
+            "header_row": header_row,
+        })
+    digest_entries.sort(key=lambda x: -x["table_cells"])
+    digest_entries = digest_entries[:max_digest_pages]
+
+    if not digest_entries:
+        return {}
+
+    prompt = (
+        "Below is a digest of a financial report PDF. Each entry has: page number, a short text snippet, "
+        "table size (cells), and the first row of the largest table on that page (header).\n\n"
+        "Identify the SINGLE page number that contains:\n"
+        "1. The MAIN Balance Sheet (statement of financial position: Equity and Liabilities, Assets).\n"
+        "2. The MAIN Income Statement / P&L (Revenue, expenses, profit).\n"
+        "3. The MAIN Cash Flow Statement (operating, investing, financing activities).\n\n"
+        "Prefer pages whose header row and snippet clearly show the full statement (e.g. 'PARTICULARS', year columns, "
+        "section titles like 'Equity and Liabilities' or 'Revenue from Operations'). "
+        "Reject Table of Contents and small schedules.\n\n"
+        "Return ONLY valid JSON with exactly these keys and integer page numbers:\n"
+        '{"BS": <page>, "IS": <page>, "CF": <page>}\n\n'
+        f"Digest ({len(digest_entries)} pages):\n"
+        f"{json.dumps(digest_entries, ensure_ascii=False, indent=2)}"
+    )
+
+    system = (
+        "You are a document analyst. You ONLY return a JSON object with keys BS, IS, CF and integer page numbers. "
+        "No explanation, no markdown, just the JSON."
+    )
+
+    raw = ""
+    if _invoke_llm:
+        raw = _invoke_llm(system, prompt)
+    else:
+        raw = _call_llm_api(prompt, timeout, system_override=system)
+
+    if not raw:
+        return {}
+
+    data = _parse_llm_json(raw)
+    if not isinstance(data, dict):
+        return {}
+
+    out: dict[str, int] = {}
+    valid_pages = {e["page"] for e in digest_entries}
+    for key in ("BS", "IS", "CF"):
+        v = data.get(key)
+        if v is not None and int(v) in valid_pages:
+            out[key] = int(v)
+    return out
 
 
 def rank_candidates(
@@ -41,7 +144,7 @@ def rank_candidates(
         if _invoke_llm:
             raw = _invoke_llm(statement_type, candidates, doc_meta)
         else:
-            prompt = build_planner_prompt(statement_type, candidates)
+            prompt = build_planner_prompt(statement_type, candidates, doc_meta)
             raw = _call_llm_api(prompt, timeout)
         if not raw:
             return [], "table", "LLM_PLAN_INVALID"
@@ -101,34 +204,53 @@ def _parse_llm_json(raw: str) -> dict | None:
     return None
 
 
-def build_planner_prompt(statement_type: str, candidates: list[dict[str, Any]]) -> str:
+def build_planner_prompt(statement_type: str, candidates: list[dict[str, Any]], doc_meta: dict[str, Any] | None = None) -> str:
     """Build the user prompt for the LLM from statement type and candidate metadata."""
+    doc_meta = doc_meta or {}
+    total_pages = doc_meta.get("total_pages") or doc_meta.get("pages")
+    total_line = f" (Document has {total_pages} pages.)" if total_pages else ""
+
     return (
-        "Task: Rank candidate PDF pages that may contain a financial statement.\n"
-        f"Statement type: {statement_type}\n\n"
-        "Rules:\n"
-        "- Prefer pages with multi-column numeric tables and year headers.\n"
-        "- Reject Table of Contents and narrative pages.\n"
-        "- Balance Sheet: assets/liabilities/equity (often 'As at March 31').\n"
-        "- Income Statement: revenue/expenses/profit.\n"
-        "- Cash Flow: operating/investing/financing sections.\n\n"
-        "Return ONLY valid JSON with exactly these keys:\n"
-        '{ "ranked_pages": [..], "mode_preference": "table"|"ocr_rows", "rationale": "..." }\n\n'
-        "Candidates JSON:\n"
+        "Task: Pick the ONE page that contains the **main** "
+        + _statement_label(statement_type)
+        + ", then rank the rest by likelihood.\n\n"
+        "Important:\n"
+        "- The **main** statement is usually a **large table** (many rows and columns) with full section headers.\n"
+        "- Schedules, notes, or excerpts are **smaller tables** (fewer rows) that repeat similar keywords.\n"
+        "- Prefer the page whose table is **largest** (see largest_table_cells; main statement is usually 100+ cells).\n"
+        "- Balance Sheet: look for 'Equity and Liabilities', 'Assets', or 'As at March 31' in a **big** table.\n"
+        "- Income Statement: look for 'Revenue from Operations', 'Profit before tax' in a **big** table.\n"
+        "- Cash Flow: look for 'Cash flow from operating activities' in a **big** table.\n"
+        "- Reject Table of Contents and pages with only a tiny table (e.g. 3–5 rows).\n\n"
+        f"Return ONLY valid JSON: "
+        '{"ranked_pages": [best_page_first, ...], "mode_preference": "table", "rationale": "one sentence"}\n\n'
+        "Use header_row (first row of largest table) to see what each table contains; prefer the page whose header_row has year columns or section titles (e.g. PARTICULARS, Equity and Liabilities, Revenue from Operations).\n\n"
+        f"Candidates (page, snippet, header_row, table_shapes, largest_table_cells):\n"
         f"{json.dumps(candidates, ensure_ascii=False, indent=2)}\n"
+        + (total_line if total_line else "")
     )
 
 
-def _call_llm_api(prompt: str, timeout: int) -> str:
+def _statement_label(statement_type: str) -> str:
+    if statement_type == "BS":
+        return "Balance Sheet"
+    if statement_type == "IS":
+        return "Income Statement / P&L"
+    if statement_type == "CF":
+        return "Cash Flow Statement"
+    return statement_type
+
+
+def _call_llm_api(prompt: str, timeout: int = 30, system_override: str | None = None) -> str:
     """
     Call Anthropic Messages API and return raw response text (expected to be JSON).
-    Returns "" on failure, which upstream treats as invalid and falls back deterministic.
+    Returns "" on failure. system_override: use this system message instead of default.
     """
 
-    provider = (os.getenv("LOCATOR_LLM_PROVIDER") or "").lower()
+    provider = (os.getenv("LOCATOR_LLM_PROVIDER") or "anthropic").lower()
     model = os.getenv("LOCATOR_LLM_MODEL")
     api_key = os.getenv("LOCATOR_LLM_API_KEY")
-    max_tokens = int(os.getenv("LOCATOR_LLM_MAX_TOKENS") or "700")
+    max_tokens = int(os.getenv("LOCATOR_LLM_MAX_TOKENS") or "1024")
     temperature = float(os.getenv("LOCATOR_LLM_TEMPERATURE") or "0")
 
     if provider != "anthropic" or not model or not api_key:
@@ -141,11 +263,10 @@ def _call_llm_api(prompt: str, timeout: int) -> str:
         "content-type": "application/json",
     }
 
-    system = (
-        "You are a document navigation planner. "
-        "You do NOT extract numbers. You do NOT write Excel. "
-        "You ONLY rank candidate pages for the requested statement type. "
-        "Return ONLY valid JSON with keys: ranked_pages, mode_preference, rationale."
+    system = system_override or (
+        "You are a document navigation planner. You ONLY rank PDF page numbers. "
+        "Pick the single best page first in ranked_pages (the full main statement, not a small schedule). "
+        "Return ONLY valid JSON: ranked_pages (list, best first), mode_preference (\"table\"), rationale (one sentence)."
     )
 
     payload = {

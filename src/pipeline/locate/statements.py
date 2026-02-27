@@ -265,24 +265,50 @@ def locate_statements(
         candidates_set = set(candidates)
         if rank_candidates_fn and strategy == "llm":
             try:
-                candidate_meta = []
+                # Only send sensible candidates: pages with at least one table (2+ cols, 3+ rows)
+                sensible_pages = set()
                 for pn in candidates:
+                    if pn not in page_by_num:
+                        continue
+                    page = page_by_num[pn]
+                    for t in page.tables:
+                        if t.grid and len(t.grid[0]) >= 2 and len(t.grid) >= 3:
+                            sensible_pages.add(pn)
+                            break
+                list_for_llm = [pn for pn in candidates if pn in sensible_pages][:50]
+                if not list_for_llm:
+                    list_for_llm = candidates[:50]
+
+                candidate_meta = []
+                for pn in list_for_llm:
                     if pn not in page_by_num:
                         continue
                     page = page_by_num[pn]
                     text = get_page_text(page)
                     is_toc, toc_score = is_toc_like(page)
                     table_refs = _get_table_candidates_from_page(page)
+                    shapes = [{"rows": t.rows, "cols": t.cols} for t in table_refs]
+                    largest = max((t.rows * t.cols for t in table_refs), default=0)
+                    header_row: list[str] = []
+                    for t in page.tables:
+                        if not t.grid or len(t.grid[0]) < 2:
+                            continue
+                        if len(t.grid) * len(t.grid[0]) == largest:
+                            header_row = [str(c) for c in t.grid[0]]
+                            break
                     candidate_meta.append({
                         "page": pn,
-                        "snippet": _snippet(text, 400),
+                        "snippet": _snippet(text, 800),
+                        "header_row": header_row,
                         "toc_score": toc_score,
                         "numeric_density": _numeric_density(text),
                         "anchor_hits": _anchor_hits(statement_type, text),
                         "year_header_hits": _year_header_hits(text),
-                        "table_shapes": [{"rows": t.rows, "cols": t.cols} for t in table_refs],
+                        "table_shapes": shapes,
+                        "largest_table_cells": largest,
                     })
-                ranked = rank_candidates_fn(statement_type, candidate_meta, {})
+                doc_meta = {"pages": document.meta.pages, "file_name": document.meta.file_name or ""}
+                ranked = rank_candidates_fn(statement_type, candidate_meta, doc_meta)
                 if ranked:
                     candidates = [p for p in ranked if p in candidates_set]
                     if not candidates:

@@ -151,8 +151,8 @@
     "evidence_column_names": [
       "reference",
       "confidence",
-      "source",
       "page",
+      "source",
       "evidence"
     ]
   }

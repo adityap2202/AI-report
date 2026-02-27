@@ -9,16 +9,16 @@ import re
 import logging
 from typing import Any
 
-from src.models.document import Document
+from src.models.document import Document, DocumentPage
 from src.models.index_map import IndexMap, NoteRef, SectionRef, StatementRef
 
 logger = logging.getLogger(__name__)
 
 # Patterns (minimal; extend in reference/patterns)
 STATEMENT_CAPTIONS = [
-    (r"balance\s+sheet", "BS"),
-    (r"statement\s+of\s+profit\s+and\s+loss|profit\s+and\s+loss", "IS"),
-    (r"cash\s+flow\s+statement|statement\s+of\s+cash\s+flows", "CF"),
+    (r"balance\s+sheet|equity\s+and\s+liabilities", "BS"),
+    (r"statement\s+of\s+profit\s+and\s+loss|profit\s+and\s+loss|revenue\s+from\s+operations", "IS"),
+    (r"cash\s+flow\s+statement|statement\s+of\s+cash\s+flows|cash\s+flow\s+from", "CF"),
     (r"consolidated\s+balance\s+sheet", "BS"),
     (r"consolidated\s+statement\s+of\s+profit", "IS"),
     (r"consolidated\s+cash\s+flow", "CF"),
@@ -42,41 +42,71 @@ def _detect_scope(text: str) -> str:
     return "standalone"
 
 
+def _page_text_for_index(doc_page: DocumentPage) -> str:
+    """Page text from text_blocks and table grids so index finds content when ingest puts it in tables (e.g. Marker)."""
+    parts = [b.text for b in doc_page.text_blocks]
+    for t in doc_page.tables:
+        if t.grid:
+            for row in t.grid:
+                for cell in row:
+                    if isinstance(cell, str) and cell.strip():
+                        parts.append(cell.strip())
+    return " ".join(parts)
+
+
 def build_index_map(
     document: Document,
     company_name_override: str | None = None,
     fiscal_year_override: str | None = None,
+    statement_pages_from_llm: dict[str, int] | None = None,
 ) -> IndexMap:
     """
-    Scan document pages for sections, statements, notes. Build IndexMap.
+    Build IndexMap. If statement_pages_from_llm is provided (e.g. {"BS": 70, "IS": 71, "CF": 72}),
+    use it for statements and skip regex statement detection. Notes/sections still use regex.
     """
     sections: list[SectionRef] = []
     statements: list[StatementRef] = []
     notes: list[NoteRef] = []
     priority_locations: dict[str, Any] = {}
 
+    if statement_pages_from_llm:
+        for stype, page_num in statement_pages_from_llm.items():
+            if stype in ("BS", "IS", "CF") and page_num >= 1 and page_num <= document.meta.pages:
+                pg = next((p for p in document.pages if p.page == page_num), None)
+                caption = _page_text_for_index(pg)[:200] if pg else ""
+                statements.append(
+                    StatementRef(
+                        type=stype,
+                        scope="standalone",
+                        caption=caption,
+                        page_start=page_num,
+                        page_end=page_num,
+                    )
+                )
+
     for doc_page in document.pages:
         page_num = doc_page.page
-        full_text = " ".join(b.text for b in doc_page.text_blocks).lower()
+        full_text = _page_text_for_index(doc_page).lower()
 
-        # Statement captions
-        for pattern, stype in STATEMENT_CAPTIONS:
-            if re.search(pattern, full_text, re.I):
-                scope = _detect_scope(full_text)
-                if stype != "Notes":
-                    statements.append(
-                        StatementRef(
-                            type=stype,
-                            scope=scope,
-                            caption=full_text[:200],
-                            page_start=page_num,
-                            page_end=page_num,
+        # Statement captions (skip if we already have statements from LLM)
+        if not statement_pages_from_llm:
+            for pattern, stype in STATEMENT_CAPTIONS:
+                if re.search(pattern, full_text, re.I):
+                    scope = _detect_scope(full_text)
+                    if stype != "Notes":
+                        statements.append(
+                            StatementRef(
+                                type=stype,
+                                scope=scope,
+                                caption=full_text[:200],
+                                page_start=page_num,
+                                page_end=page_num,
+                            )
                         )
-                    )
-                break
+                    break
 
         # Note numbers
-        for m in NOTE_PATTERN.finditer(" ".join(b.text for b in doc_page.text_blocks)):
+        for m in NOTE_PATTERN.finditer(_page_text_for_index(doc_page)):
             num = m.group(1)
             notes.append(
                 NoteRef(
@@ -104,7 +134,7 @@ def build_index_map(
                     priority_locations["rpt"] = {"page_start": page_num, "page_end": page_num}
                 break
 
-    # Dedupe and merge adjacent note/section ranges (simplified: keep first occurrence)
+    # Dedupe and merge adjacent note/section ranges
     def dedupe_refs(refs: list, key_fn):
         seen = set()
         out = []
